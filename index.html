@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Web Cycling Computer — Fixed</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root{--bg:#071029;--card:#0f1724;--accent:#06b6d4;--muted:#94a3b8}
+    html,body{height:100%;margin:0;background:linear-gradient(180deg,#071029 0%, #071028 60%);color:#e6eef8;font-family:system-ui,Segoe UI,Roboto,Arial}
+    .container{max-width:1100px;margin:0 auto;padding:12px}
+    header{display:flex;justify-content:space-between;align-items:center}
+    h1{font-size:1.05rem;margin:0}
+
+    #map{height:320px;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.04);position:relative; z-index:1;}
+    .controls{display:flex;gap:8px;margin:10px 0;flex-wrap:wrap}
+    button,select{padding:10px 12px;border-radius:8px;border:none;background:var(--accent);color:#042027;font-weight:700}
+    button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+
+    .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:12px;border-radius:10px}
+    .big{font-size:1.5rem;font-weight:700}
+    .muted{color:var(--muted);font-size:0.85rem}
+
+    .settings-panel{background:rgba(255,255,255,0.02);padding:12px;border-radius:10px;margin-top:8px;display:none}
+    label{display:block;font-size:0.85rem;margin-top:8px}
+    input[type=number], input[type=text], select.filter {width:100%;padding:8px;border-radius:6px;border:none;margin-top:4px}
+
+    .notice{margin-top:8px;padding:8px;border-radius:8px;background:rgba(255,255,255,0.02);color:#ffd;display:none}
+
+    /* History panel */
+    .history-panel{position:fixed;right:12px;top:80px;width:360px;max-height:70vh;background:#061523;padding:12px;border-radius:12px;box-shadow:0 10px 30px rgba(2,6,23,0.6);overflow:auto;display:none;z-index:1000;}
+    .history-header{display:flex;gap:8px;align-items:center}
+    .ride-row{display:flex;justify-content:space-between;align-items:center;padding:8px;border-radius:8px;margin-top:8px;background:rgba(255,255,255,0.02)}
+    .small{font-size:0.85rem;color:var(--muted)}
+
+    @media (max-width:900px){ .history-panel{position:static;width:auto;max-height:40vh;margin-top:12px;} .metrics{grid-template-columns:repeat(2,1fr)} }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Web Cycling Computer — Full</h1>
+      <div class="muted">Metric • Simulation & Live GPS • History</div>
+    </header>
+
+    <div id="map"></div>
+
+    <div class="controls">
+      <button id="startBtn">Start</button>
+      <button id="pauseBtn" class="secondary">Pause</button>
+      <button id="stopBtn" class="secondary">Stop</button>
+
+      <select id="modeSelect" title="Choose data source">
+        <option value="gps">Live GPS</option>
+        <option value="sim">Simulation</option>
+      </select>
+
+      <button id="settingsBtn" class="secondary">⚙️ Settings</button>
+      <button id="historyBtn" class="secondary">📜 Ride History</button>
+      <button id="downloadCsv" class="secondary">Download CSV</button>
+    </div>
+
+    <div class="notice" id="notice"></div>
+
+    <div class="metrics">
+      <div class="card"><div class="muted">Speed</div><div id="speed" class="big">0.0 km/h</div></div>
+      <div class="card"><div class="muted">Power</div><div id="power" class="big">0 W</div></div>
+      <div class="card"><div class="muted">Distance</div><div id="distance" class="big">0.00 km</div></div>
+      <div class="card"><div class="muted">Elevation</div><div id="elevation" class="big">— m</div></div>
+      <div class="card"><div class="muted">Grade</div><div id="grade" class="big">— %</div></div>
+      <div class="card"><div class="muted">Elapsed</div><div id="elapsed" class="big">00:00:00</div></div>
+    </div>
+
+    <div class="settings-panel" id="settingsPanel">
+      <label>Rider + bike mass (kg)</label>
+      <input type="number" id="mass" step="0.1" />
+      <label>Crr (rolling resistance coefficient)</label>
+      <input type="number" id="crr" step="0.0001" />
+      <label>CdA - descents (<= 0% grade)</label>
+      <input type="number" id="cdaDesc" step="0.001" />
+      <label>CdA - hoods (0% - 5% grade)</label>
+      <input type="number" id="cdaHoods" step="0.001" />
+      <label>CdA - out of saddle (&gt;5% grade)</label>
+      <input type="number" id="cdaClimb" step="0.001" />
+      <label>Drivetrain efficiency (0-1)</label>
+      <input type="number" id="efficiency" step="0.01" />
+      <label>Air density (kg/m³)</label>
+      <input type="number" id="rho" step="0.001" />
+      <div style="margin-top:10px"><button id="saveSettingsBtn">Save settings</button></div>
+    </div>
+
+    <div class="history-panel" id="historyPanel">
+      <div class="history-header">
+        <input id="searchInput" type="text" placeholder="Search date/mode/distance" style="flex:1;padding:8px;border-radius:8px;border:none" />
+        <select id="modeFilter" class="filter">
+          <option value="all">All</option>
+          <option value="gps">Live GPS</option>
+          <option value="sim">Simulation</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <input id="fromDate" type="text" placeholder="From (YYYY-MM-DD)" />
+        <input id="toDate" type="text" placeholder="To (YYYY-MM-DD)" />
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <label class="small">Distance (km)</label>
+        <input id="minDist" type="number" placeholder="min" style="width:70px" />
+        <input id="maxDist" type="number" placeholder="max" style="width:70px" />
+      </div>
+      <div id="ridesList"></div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button id="clearAllRides" class="secondary">Clear All</button>
+      </div>
+    </div>
+
+  </div>
+
+<script src="https://unpkg.com/pako@2.1.0/dist/pako.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// =========================
+// Config & Defaults
+// =========================
+const SAMPLE_INTERVAL_MS = 1000; // target sample rate
+const DEFAULTS = {
+  mass: 75, // kg (rider + bike)
+  crr: 0.004,
+  cdaDesc: 0.30,
+  cdaHoods: 0.48,
+  cdaClimb: 0.60,
+  efficiency: 0.97,
+  rho: 1.225
+};
+
+// =========================
+// State
+// =========================
+let settings = loadSettings();
+let map, trackLayer, polyline, marker;
+let recording = false, paused = false;
+let watchId = null; // from watchPosition
+let sampleIntervalId = null; // per-second sampler
+let lastGeoPos = null; // last raw geolocation position object
+let rideData = []; // samples: {t,lat,lon,elev,speed_m_s,power,grade}
+let lastSample = null;
+let totalDistance = 0; // meters
+let startTime = null;
+let pauseTime = null;
+let simData = [], simIndex = 0;
+let simTimeoutId = null;
+
+// history storage key
+const RIDES_KEY = 'cycling_rides_v1';
+
+// =========================
+// UI refs
+// =========================
+const noticeEl = document.getElementById('notice');
+const startBtn = document.getElementById('startBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+const stopBtn = document.getElementById('stopBtn');
+const modeSelect = document.getElementById('modeSelect');
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsPanel = document.getElementById('settingsPanel');
+const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+const downloadCsvBtn = document.getElementById('downloadCsv');
+const historyBtn = document.getElementById('historyBtn');
+const historyPanel = document.getElementById('historyPanel');
+
+// metric elements
+const speedEl = document.getElementById('speed');
+const powerEl = document.getElementById('power');
+const distanceEl = document.getElementById('distance');
+const elevationEl = document.getElementById('elevation');
+const gradeEl = document.getElementById('grade');
+const elapsedEl = document.getElementById('elapsed');
+
+// history filters
+const searchInput = document.getElementById('searchInput');
+const modeFilter = document.getElementById('modeFilter');
+const fromDate = document.getElementById('fromDate');
+const toDate = document.getElementById('toDate');
+const minDist = document.getElementById('minDist');
+const maxDist = document.getElementById('maxDist');
+const ridesList = document.getElementById('ridesList');
+const clearAllRidesBtn = document.getElementById('clearAllRides');
+
+// =========================
+// Helpers
+// =========================
+function loadSettings(){
+  try{
+    const s = JSON.parse(localStorage.getItem('bikeSettings')||'null');
+    return Object.assign({}, DEFAULTS, s || {});
+  }catch(e){ return Object.assign({}, DEFAULTS); }
+}
+function saveSettings(){
+  const fields = ['mass','crr','cdaDesc','cdaHoods','cdaClimb','efficiency','rho'];
+  for(const f of fields){
+    const el = document.getElementById(f);
+    if(el) settings[f] = parseFloat(el.value) || settings[f];
+  }
+  localStorage.setItem('bikeSettings', JSON.stringify(settings));
+  showNotice('Settings saved',2000);
+}
+function populateSettingsUI(){
+  const map = { mass: 'mass', crr:'crr', cdaDesc:'cdaDesc', cdaHoods:'cdaHoods', cdaClimb:'cdaClimb', efficiency:'efficiency', rho:'rho' };
+  for(const k in map){ const el = document.getElementById(map[k]); if(el) el.value = settings[k]; }
+}
+
+function showNotice(msg,ms=0){ noticeEl.style.display='block'; noticeEl.textContent = msg; if(ms>0){ setTimeout(()=>{ noticeEl.style.display='none'; }, ms); } }
+function hideNotice(){ noticeEl.style.display='none'; }
+
+function distanceMeters(aLat,aLon,bLat,bLon){
+  const R = 6371000; // m
+  const toRad = x => x*Math.PI/180;
+  const dLat = toRad(bLat-aLat), dLon = toRad(bLon-aLon);
+  const lat1 = toRad(aLat), lat2 = toRad(bLat);
+  const sinDlat = Math.sin(dLat/2), sinDlon = Math.sin(dLon/2);
+  const c = 2*Math.asin(Math.sqrt(sinDlat*sinDlat + Math.cos(lat1)*Math.cos(lat2)*sinDlon*sinDlon));
+  return R*c;
+}
+
+function formatTimeHMS(seconds){
+  const h = Math.floor(seconds/3600), m = Math.floor((seconds%3600)/60), s = Math.floor(seconds%60);
+  return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;
+}
+
+// =========================
+// Compression helpers (pako + base64)
+// =========================
+function compressRideData(dataArray){
+  const json = JSON.stringify(dataArray);
+  const compressed = pako.gzip(json);
+  // to base64
+  let binary = '';
+  const len = compressed.length;
+  for(let i=0;i<len;i++){ binary += String.fromCharCode(compressed[i]); }
+  return btoa(binary);
+}
+function decompressRideData(base64){
+  const str = atob(base64);
+  const arr = new Uint8Array(str.length);
+  for(let i=0;i<str.length;i++) arr[i] = str.charCodeAt(i);
+  const json = pako.ungzip(arr, { to: 'string' });
+  return JSON.parse(json);
+}
+
+// =========================
+// Ride storage: metadata + compressed payload
+// =========================
+function loadRidesMeta(){
+  try{ const data = JSON.parse(localStorage.getItem(RIDES_KEY)||'[]'); return data; }catch(e){ return []; }
+}
+function saveRideMeta(metaArray){ localStorage.setItem(RIDES_KEY, JSON.stringify(metaArray)); }
+
+function storeRide(modeLabel){
+  if(!rideData.length) return;
+  // compute summary
+  const duration = Math.max(1, Math.floor((rideData[rideData.length-1].t - rideData[0].t)/1000));
+  const distance_km = totalDistance/1000;
+  const avgPower = Math.round( rideData.reduce((s,p)=>s+(p.power||0),0) / Math.max(1,rideData.length) );
+  const id = Date.now();
+  const metadata = {
+    id, date: (new Date(id)).toISOString(), mode: modeLabel, distance_km: Number(distance_km.toFixed(2)), duration_s: duration, avgPower
+  };
+  // compress payload
+  const compressed = compressRideData(rideData.map(p=>({t:p.t,lat:p.lat,lon:p.lon,elev:p.elev,speed_m_s:p.speed_m_s,power:p.power,grade:p.grade})));
+  const metaList = loadRidesMeta();
+  metaList.unshift(Object.assign({}, metadata, { compressed }));
+  saveRideMeta(metaList);
+  showNotice('Ride saved to history',2000);
+}
+
+function deleteRide(id){
+  let list = loadRidesMeta();
+  list = list.filter(r=>r.id !== id);
+  saveRideMeta(list);
+  renderRidesList();
+}
+
+function clearAllRides(){ localStorage.removeItem(RIDES_KEY); renderRidesList(); showNotice('All rides cleared',2000); }
+
+// =========================
+// Power model
+// =========================
+function calcPowerFromPhysics(speed_m_s, grade_percent){
+  const g = 9.80665;
+  const m = settings.mass;
+  const Crr = settings.crr;
+  const rho = settings.rho;
+  const eff = settings.efficiency;
+  const grade = grade_percent; // percent
+  let cdaVal = settings.cdaHoods;
+  if(grade <= 0) cdaVal = settings.cdaDesc;
+  else if(grade > 5) cdaVal = settings.cdaClimb;
+  const slope = grade/100;
+  const v = speed_m_s;
+  const F_gravity = m * g * slope;
+  const F_roll = Crr * m * g;
+  const F_aero = 0.5 * rho * cdaVal * v * v;
+  const P = (F_gravity + F_roll + F_aero) * v / Math.max(0.0001, eff);
+  return Math.max(0, P);
+}
+
+// =========================
+// Map init
+// =========================
+function initMap(){
+  map = L.map('map', {zoomControl:false}).setView([37.7749,-122.4194], 12);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap contributors' }).addTo(map);
+  trackLayer = L.layerGroup().addTo(map);
+}
+initMap();
+
+// =========================
+// UI updates
+// =========================
+function updateMetricsDisplay(sample){
+  const speed_kmh = (sample.speed_m_s||0) * 3.6;
+  speedEl.textContent = `${speed_kmh.toFixed(1)} km/h`;
+  powerEl.textContent = `${Math.round(sample.power||0)} W`;
+  distanceEl.textContent = `${(totalDistance/1000).toFixed(2)} km`;
+  elevationEl.textContent = (sample.elev!=null)? `${Math.round(sample.elev)} m` : '— m';
+  gradeEl.textContent = (sample.grade!=null)? `${(sample.grade).toFixed(1)} %` : '— %';
+  const elapsed = startTime ? Math.floor(((paused ? pauseTime : Date.now()) - startTime)/1000) : 0;
+  elapsedEl.textContent = formatTimeHMS(elapsed);
+}
+
+function redrawTrack(){
+  trackLayer.clearLayers();
+  if(rideData.length===0) return;
+  const latlngs = rideData.map(p=>[p.lat,p.lon]);
+  polyline = L.polyline(latlngs, {color: '#06b6d4', weight: 4, opacity:0.9}).addTo(trackLayer);
+  marker = L.circleMarker(latlngs[latlngs.length-1], {radius:6, fillColor:'#06b6d4', color:'#fff', weight:1}).addTo(trackLayer);
+  map.fitBounds(polyline.getBounds(), {padding:[20,20]});
+  for(let i=0;i<rideData.length;i+=Math.max(1, Math.floor(rideData.length/120))){
+    const p = rideData[i];
+    const mk = L.circleMarker([p.lat,p.lon], {radius:6, opacity:0, fillOpacity:0}).addTo(trackLayer);
+    mk.on('click', ()=>{
+      const html = `<b>${new Date(p.t).toISOString()}</b><br/>Speed: ${(p.speed_m_s*3.6).toFixed(1)} km/h<br/>Power: ${Math.round(p.power)} W<br/>Elev: ${p.elev!=null?Math.round(p.elev)+' m':'—'}`;
+      L.popup().setLatLng([p.lat,p.lon]).setContent(html).openOn(map);
+    });
+  }
+}
+
+// =========================
+// Sampling (GPS)
+// =========================
+function geoSuccess(pos){
+  lastGeoPos = pos;
+  if(!sampleIntervalId){ sampleIntervalId = setInterval(sampleFromGeo, SAMPLE_INTERVAL_MS); sampleFromGeo(); }
+}
+function geoError(err){
+  console.warn('Geolocation error', err);
+  if(err && err.code){
+    if(err.code === 1){ showNotice('Location permission denied. Switch to Simulation or enable location permissions in your browser.', 8000); }
+    else if(err.code === 2){ showNotice('Position unavailable. Try again or use Simulation.', 8000); }
+    else if(err.code === 3){ showNotice('Geolocation timeout. Try again or use Simulation.', 8000); }
+  } else { showNotice('Geolocation error occurred. Try Simulation.', 8000); }
+  stopGpsWatch(); recording = false;
+}
+function startGpsWatch(){
+  if(!('geolocation' in navigator)){ showNotice('Geolocation not supported in this browser. Use Simulation mode.', 8000); recording = false; return; }
+  try{ watchId = navigator.geolocation.watchPosition(geoSuccess, geoError, { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }); }
+  catch(e){ console.warn('watchPosition threw', e); showNotice('Unable to start geolocation (exception). Use Simulation.', 8000); recording = false; }
+}
+function stopGpsWatch(){ if(watchId!=null && 'geolocation' in navigator){ try{ navigator.geolocation.clearWatch(watchId); }catch(e){} watchId = null; } if(sampleIntervalId){ clearInterval(sampleIntervalId); sampleIntervalId = null; } }
+
+function sampleFromGeo(){
+  if(!lastGeoPos) return; if(!recording || paused) return;
+  const now = Date.now(); const lat = lastGeoPos.coords.latitude; const lon = lastGeoPos.coords.longitude;
+  const elev = (typeof lastGeoPos.coords.altitude === 'number') ? lastGeoPos.coords.altitude : (lastSample? lastSample.elev : null);
+  let speed_m_s = (typeof lastGeoPos.coords.speed === 'number' && lastGeoPos.coords.speed !== null) ? lastGeoPos.coords.speed : 0;
+  if(lastSample){ const dt = (now - lastSample.t)/1000; if(dt > 0){ const d = distanceMeters(lastSample.lat, lastSample.lon, lat, lon); if(!speed_m_s || speed_m_s === 0) speed_m_s = d/dt; totalDistance += d; } }
+  let gradePercent = null; if(lastSample && lastSample.elev!=null && elev!=null){ const d_h = distanceMeters(lastSample.lat, lastSample.lon, lat, lon) || 1; const dz = elev - lastSample.elev; gradePercent = (dz / d_h) * 100; } else { gradePercent = 0; }
+  const power = calcPowerFromPhysics(speed_m_s, gradePercent);
+  const sample = { t: now, lat, lon, elev: elev!=null?elev:null, speed_m_s, power, grade: gradePercent };
+  rideData.push(sample); lastSample = sample; updateMetricsDisplay(sample); redrawTrack();
+}
+
+// =========================
+// Simulation (single playback)
+// =========================
+function generateSimData(){ simData = []; const centerLat = 37.7749, centerLon = -122.4194; const points = 600; for(let i=0;i<points;i++){ const angle = i/30; const lat = centerLat + (Math.sin(angle) * 0.015); const lon = centerLon + (Math.cos(angle) * 0.02); const elev = 50 + 30 * Math.sin(i/45); const speed_kmh = 16 + 6*Math.sin(i/20); simData.push({lat, lon, elev, speed_m_s: speed_kmh/3.6}); } }
+function startSimPlayback(){ generateSimData(); simIndex = 0; const tick = async ()=>{ if(!recording || paused) return; if(simIndex >= simData.length){ stopRide(); return; } const p = simData[simIndex++]; const now = Date.now(); let speed_m_s = p.speed_m_s; let elev = p.elev; let lat = p.lat, lon = p.lon; if(lastSample){ totalDistance += distanceMeters(lastSample.lat, lastSample.lon, lat, lon); } let gradePercent = 0; if(lastSample && lastSample.elev!=null){ const d_h = distanceMeters(lastSample.lat, lastSample.lon, lat, lon) || 1; gradePercent = (elev - lastSample.elev)/d_h*100; } const power = calcPowerFromPhysics(speed_m_s, gradePercent); const sample = { t: now, lat, lon, elev, speed_m_s, power, grade: gradePercent }; rideData.push(sample); lastSample = sample; updateMetricsDisplay(sample); redrawTrack(); simTimeoutId = setTimeout(tick, SAMPLE_INTERVAL_MS); }; tick(); }
+function stopSimPlayback(){ if(simTimeoutId) clearTimeout(simTimeoutId); }
+
+// =========================
+// Controls: start/pause/stop
+// =========================
+function startRide(){ if(recording) return; rideData = []; lastSample = null; totalDistance = 0; startTime = Date.now(); lastGeoPos = null; hideNotice(); recording = true; paused = false; startBtn.disabled = true; pauseBtn.disabled = false; stopBtn.disabled = false; pauseBtn.textContent = 'Pause'; const mode = modeSelect.value; if(mode === 'gps'){ startGpsWatch(); } else { startSimPlayback(); } }
+function pauseRide(){ if(!recording) return; paused = !paused; if(paused){ pauseBtn.textContent = 'Resume'; showNotice('Paused'); pauseTime = Date.now(); stopGpsWatch(); stopSimPlayback(); } else { pauseBtn.textContent = 'Pause'; hideNotice(); startTime += Date.now() - pauseTime; const mode = modeSelect.value; if(mode === 'gps'){ startGpsWatch(); } else { startSimPlayback(); } } }
+function stopRide(){ if(!recording) return; recording = false; paused = false; stopGpsWatch(); stopSimPlayback(); startBtn.disabled = false; pauseBtn.disabled = true; pauseBtn.textContent = 'Pause'; stopBtn.disabled = true; if(rideData.length){ const modeLabel = modeSelect.value==='gps'?'Live GPS':'Simulation'; storeRide(modeLabel); downloadCSV(); } }
+
+// =========================
+// CSV / GPX exports
+// =========================
+function downloadCSV(fromData){
+  const rows = fromData || rideData;
+  const hdr = 'time_iso,timestamp_ms,lat,lon,elev_m,speed_m_s,speed_kmh,power_w,grade_percent\n';
+  let csv = hdr + rows.map(p=>{
+    return `${new Date(p.t).toISOString()},${p.t},${p.lat},${p.lon},${p.elev!=null?p.elev:''},${p.speed_m_s!=null?p.speed_m_s.toFixed(3):''},${p.speed_m_s!=null?(p.speed_m_s*3.6).toFixed(2):''},${p.power!=null?Math.round(p.power):''},${p.grade!=null?p.grade.toFixed(3):''}`;
+  }).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = `ride_${new Date().toISOString().replace(/[:.]/g,'-')}.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  showNotice('CSV downloaded',3000);
+}
+function downloadGPX(fromData){
+  const rows = fromData || rideData;
+  let gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="web-cycling-computer" xmlns="http://www.topografix.com/GPX/1/1">\n<trk><name>ride</name><trkseg>\n`;
+  for(const p of rows){
+    gpx += `<trkpt lat="${p.lat}" lon="${p.lon}"><ele>${p.elev!=null?p.elev:''}</ele><time>${new Date(p.t).toISOString()}</time></trkpt>\n`;
+  }
+  gpx += `</trkseg></trk>\n</gpx>`;
+  const blob = new Blob([gpx],{type:'application/gpx+xml'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = `ride_${new Date().toISOString().replace(/[:.]/g,'-')}.gpx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  showNotice('GPX downloaded',3000);
+}
+
+// =========================
+// History UI
+// =========================
+function renderRidesList(){
+  const list = loadRidesMeta();
+  ridesList.innerHTML = '';
+  if(!list.length){ ridesList.innerHTML = '<div class="small" style="margin-top:8px">No rides saved yet</div>'; return; }
+  for(const r of list){
+    const row = document.createElement('div');
+    row.className = 'ride-row';
+    row.innerHTML = `<div style="flex:1"><div style="font-weight:700">${new Date(r.date).toLocaleString()}</div><div class="small">${r.mode} • ${r.distance_km} km • ${Math.floor(r.duration_s/60)}m ${r.duration_s%60}s • avg ${r.avgPower} W</div></div><div style="display:flex;flex-direction:column;gap:6px"><button data-id="${r.id}" class="viewBtn">View</button><button data-id="${r.id}" class="exportBtn">⬇</button><button data-id="${r.id}" class="delBtn">🗑</button></div>`;
+    ridesList.appendChild(row);
+  }
+  // attach handlers
+  ridesList.querySelectorAll('.viewBtn').forEach(b=>b.addEventListener('click', ()=>{ const id = Number(b.getAttribute('data-id')); openRide(id); }));
+  ridesList.querySelectorAll('.delBtn').forEach(b=>b.addEventListener('click', ()=>{ const id = Number(b.getAttribute('data-id')); if(confirm('Delete ride?')) deleteRide(id); }));
+  ridesList.querySelectorAll('.exportBtn').forEach(b=>b.addEventListener('click', ()=>{ const id = Number(b.getAttribute('data-id')); exportRideMenu(id); }));
+}
+
+function exportRideMenu(id){
+  const list = loadRidesMeta();
+  const r = list.find(x=>x.id===id);
+  if(!r) return;
+  const data = decompressRideData(r.compressed); // array
+  // small UI prompt
+  if(confirm('Download CSV? Cancel to download GPX')){ downloadCSV(data); } else { downloadGPX(data); }
+}
+
+function openRide(id){
+  const list = loadRidesMeta();
+  const r = list.find(x=>x.id===id);
+  if(!r) return;
+  const data = decompressRideData(r.compressed); // restore into rideData and display
+  rideData = data.map(p=>({ t:p.t, lat:p.lat, lon:p.lon, elev:p.elev, speed_m_s:p.speed_m_s, power:p.power, grade:p.grade }));
+  totalDistance = 0;
+  for(let i=1;i<rideData.length;i++){
+    totalDistance += distanceMeters(rideData[i-1].lat, rideData[i-1].lon, rideData[i].lat, rideData[i].lon);
+  }
+  lastSample = rideData[rideData.length-1];
+  updateMetricsDisplay(lastSample);
+  redrawTrack();
+  historyPanel.style.display='none';
+  showNotice('Loaded ride from history',2000);
+}
+
+// filters
+searchInput.addEventListener('input', filterList);
+modeFilter.addEventListener('change', filterList);
+fromDate.addEventListener('change', filterList);
+toDate.addEventListener('change', filterList);
+minDist.addEventListener('change', filterList);
+maxDist.addEventListener('change', filterList);
+function filterList(){
+  let list = loadRidesMeta();
+  const q = searchInput.value.trim().toLowerCase();
+  const mode = modeFilter.value;
+  const from = fromDate.value;
+  const to = toDate.value;
+  const minD = parseFloat(minDist.value);
+  const maxD = parseFloat(maxDist.value);
+  list = list.filter(r=>{
+    if(mode!=='all' && mode!=='' && r.mode.toLowerCase()!==mode) return false;
+    if(q){ if(!(r.date.toLowerCase().includes(q) || r.mode.toLowerCase().includes(q) || String(r.distance_km).includes(q))) return false; }
+    if(from){ if(new Date(r.date) < new Date(from+'T00:00:00')) return false; }
+    if(to){ if(new Date(r.date) > new Date(to+'T23:59:59')) return false; }
+    if(!isNaN(minD)){ if(r.distance_km < minD) return false; }
+    if(!isNaN(maxD)){ if(r.distance_km > maxD) return false; }
+    return true;
+  });
+  saveRideMeta(list.concat([])); // no-op keep storage
+  // render filtered list
+  ridesList.innerHTML = '';
+  if(!list.length){ ridesList.innerHTML = '<div class="small" style="margin-top:8px">No rides match</div>'; return; }
+  for(const r of list){
+    const row = document.createElement('div');
+    row.className = 'ride-row';
+    row.innerHTML = `<div style="flex:1"><div style="font-weight:700">${new Date(r.date).toLocaleString()}</div><div class="small">${r.mode} • ${r.distance_km} km • ${Math.floor(r.duration_s/60)}m ${r.duration_s%60}s • avg ${r.avgPower} W</div></div><div style="display:flex;flex-direction:column;gap:6px"><button data-id="${r.id}" class="viewBtn">View</button><button data-id="${r.id}" class="exportBtn">⬇</button><button data-id="${r.id}" class="delBtn">🗑</button></div>`;
+    ridesList.appendChild(row);
+  }
+  ridesList.querySelectorAll('.viewBtn').forEach(b=>b.addEventListener('click', ()=>{ const id = Number(b.getAttribute('data-id')); openRide(id); }));
+  ridesList.querySelectorAll('.delBtn').forEach(b=>b.addEventListener('click', ()=>{ const id = Number(b.getAttribute('data-id')); if(confirm('Delete ride?')) deleteRide(id); }));
+  ridesList.querySelectorAll('.exportBtn').forEach(b=>b.addEventListener('click', ()=>{ const id = Number(b.getAttribute('data-id')); exportRideMenu(id); }));
+}
+
+// =========================
+// History helpers
+// =========================
+function renderInitialRides(){ const list = loadRidesMeta(); if(list.length) renderRidesList(); }
+clearAllRidesBtn.addEventListener('click', ()=>{ if(confirm('Clear all saved rides?')) clearAllRides(); });
+
+// =========================
+// Wiring
+// =========================
+startBtn.addEventListener('click', startRide);
+pauseBtn.addEventListener('click', pauseRide);
+stopBtn.addEventListener('click', stopRide);
+settingsBtn.addEventListener('click', ()=>{ settingsPanel.style.display = settingsPanel.style.display === 'block' ? 'none' : 'block'; populateSettingsUI(); });
+saveSettingsBtn.addEventListener('click', ()=>{ saveSettings(); settingsPanel.style.display='none'; });
+downloadCsvBtn.addEventListener('click', ()=> downloadCSV());
+historyBtn.addEventListener('click', ()=>{ historyPanel.style.display = historyPanel.style.display === 'block' ? 'none' : 'block'; renderRidesList(); });
+
+// initialize UI states
+(function init(){ populateSettingsUI(); pauseBtn.disabled = true; stopBtn.disabled = true; renderInitialRides(); if(navigator.permissions && navigator.permissions.query){ navigator.permissions.query({name:'geolocation'}).then(p=>{ if(p.state === 'denied'){ showNotice('Geolocation permission previously denied — switch to Simulation or enable location in browser settings.', 10000); } }).catch(()=>{}); } })();
+</script>
+</body>
+</html>
